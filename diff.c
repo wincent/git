@@ -2438,6 +2438,15 @@ static int fn_out_consume(void *priv, char *line, unsigned long len)
 	return 0;
 }
 
+static int quick_consume(void *priv, char *line UNUSED, unsigned long len UNUSED)
+{
+	struct emit_callback *ecbdata = priv;
+	struct diff_options *o = ecbdata->opt;
+
+	o->found_changes = 1;
+	return 1;
+}
+
 static void pprint_rename(struct strbuf *name, const char *a, const char *b)
 {
 	const char *old_name = a;
@@ -3703,6 +3712,7 @@ static void builtin_diff(const char *name_a,
 		xdemitconf_t xecfg;
 		struct emit_callback ecbdata;
 		const struct userdiff_funcname *pe;
+		int dry_run = o->dry_run;
 
 		if (must_show_header) {
 			emit_diff_symbol(o, DIFF_SYMBOL_HEADER,
@@ -3753,8 +3763,11 @@ static void builtin_diff(const char *name_a,
 
 		if (o->word_diff)
 			init_diff_words_data(&ecbdata, o, one, two);
-		if (xdi_diff_outf(&mf1, &mf2, NULL, fn_out_consume,
-				  &ecbdata, &xpp, &xecfg))
+		if (dry_run)
+			xdi_diff_outf(&mf1, &mf2, NULL, quick_consume,
+				      &ecbdata, &xpp, &xecfg);
+		else if (xdi_diff_outf(&mf1, &mf2, NULL, fn_out_consume,
+				       &ecbdata, &xpp, &xecfg))
 			die("unable to generate diff for %s", one->path);
 		if (o->word_diff)
 			free_diff_words_data(&ecbdata);
@@ -6168,6 +6181,22 @@ static void diff_flush_patch(struct diff_filepair *p, struct diff_options *o)
 	run_diff(p, o);
 }
 
+/* return 1 if any change is found; otherwise, return 0 */
+static int diff_flush_patch_quietly(struct diff_filepair *p, struct diff_options *o)
+{
+	int dry_run = o->dry_run;
+	int found_changes = o->found_changes;
+	int ret;
+
+	o->dry_run = 1;
+	o->found_changes = 0;
+	diff_flush_patch(p, o);
+	ret = o->found_changes;
+	o->dry_run = dry_run;
+	o->found_changes |= found_changes;
+	return ret;
+}
+
 static void diff_flush_stat(struct diff_filepair *p, struct diff_options *o,
 			    struct diffstat_t *diffstat)
 {
@@ -6796,8 +6825,15 @@ void diff_flush(struct diff_options *options)
 			     DIFF_FORMAT_CHECKDIFF)) {
 		for (i = 0; i < q->nr; i++) {
 			struct diff_filepair *p = q->queue[i];
-			if (check_pair_status(p))
-				flush_one_pair(p, options);
+
+			if (!check_pair_status(p))
+				continue;
+
+			if (options->flags.diff_from_contents &&
+			    !diff_flush_patch_quietly(p, options))
+				continue;
+
+			flush_one_pair(p, options);
 		}
 		separator++;
 	}
@@ -6849,19 +6885,10 @@ void diff_flush(struct diff_options *options)
 	if (output_format & DIFF_FORMAT_NO_OUTPUT &&
 	    options->flags.exit_with_status &&
 	    options->flags.diff_from_contents) {
-		/*
-		 * run diff_flush_patch for the exit status. setting
-		 * options->file to /dev/null should be safe, because we
-		 * aren't supposed to produce any output anyway.
-		 */
-		diff_free_file(options);
-		options->file = xfopen("/dev/null", "w");
-		options->close_file = 1;
-		options->color_moved = 0;
 		for (i = 0; i < q->nr; i++) {
 			struct diff_filepair *p = q->queue[i];
 			if (check_pair_status(p))
-				diff_flush_patch(p, options);
+				diff_flush_patch_quietly(p, options);
 			if (options->found_changes)
 				break;
 		}

@@ -11,7 +11,7 @@ test_description='Test special whitespace in diff engine.
 . "$TEST_DIRECTORY"/lib-diff.sh
 
 for opt_res in --patch --quiet -s --stat --shortstat --dirstat=lines \
-	       --raw! --name-only! --name-status!
+	       --raw --name-only --name-status
 do
 	opts=${opt_res%!} expect_failure=
 	test "$opts" = "$opt_res" ||
